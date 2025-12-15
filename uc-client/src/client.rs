@@ -43,12 +43,18 @@ impl UCClient {
             .connect_timeout(config.connect_timeout);
 
         let builder = match env::var("HTTP_PROXY") {
-            Ok(http_env) => builder.proxy(reqwest::Proxy::http(http_env)?),
+            Ok(http_env) => {
+                eprintln!("Using http proxy: {}", http_env);
+                builder.proxy(reqwest::Proxy::http(http_env)?)
+            },
             Err(_) => builder,
         };
 
         let builder = match env::var("HTTPS_PROXY") {
-            Ok(https_env) => builder.proxy(reqwest::Proxy::https(https_env)?),
+            Ok(https_env) => {
+                eprintln!("Using https proxy: {}", https_env);
+                builder.proxy(reqwest::Proxy::https(https_env)?)
+            },
             Err(_) => builder,
         };
 
