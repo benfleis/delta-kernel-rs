@@ -1,3 +1,4 @@
+use std::env;
 use std::future::Future;
 use std::time::Duration;
 
@@ -34,11 +35,24 @@ impl UCClient {
             header::HeaderValue::from_static("application/json"),
         );
 
-        let client = Client::builder()
+        // let http_proxy = reqwest::Proxy::http("http://127.0.0.1:8080");
+
+        let builder = Client::builder()
             .default_headers(headers)
             .timeout(config.timeout)
-            .connect_timeout(config.connect_timeout)
-            .build()?;
+            .connect_timeout(config.connect_timeout);
+
+        let builder = match env::var("HTTP_PROXY") {
+            Ok(http_env) => builder.proxy(reqwest::Proxy::http(http_env)?),
+            Err(_) => builder,
+        };
+
+        let builder = match env::var("HTTPS_PROXY") {
+            Ok(https_env) => builder.proxy(reqwest::Proxy::https(https_env)?),
+            Err(_) => builder,
+        };
+
+        let client = builder.build()?;
 
         Ok(Self {
             client,
