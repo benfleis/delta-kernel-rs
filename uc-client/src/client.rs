@@ -3,6 +3,8 @@ use std::future::Future;
 use std::time::Duration;
 
 use reqwest::{header, Client, Response, StatusCode};
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Error as MiddlewareError};
+use reqwest_tracing::TracingMiddleware;
 use serde::Deserialize;
 use tracing::{instrument, warn};
 use url::Url;
@@ -16,7 +18,7 @@ use crate::models::tables::TablesResponse;
 /// An HTTP client for interacting with the Unity Catalog API.
 #[derive(Debug, Clone)]
 pub struct UCClient {
-    client: Client,
+    client: ClientWithMiddleware,
     config: ClientConfig,
     base_url: Url,
 }
@@ -46,7 +48,7 @@ impl UCClient {
             Ok(http_env) => {
                 eprintln!("Using http proxy: {}", http_env);
                 builder.proxy(reqwest::Proxy::http(http_env)?)
-            },
+            }
             Err(_) => builder,
         };
 
@@ -54,14 +56,18 @@ impl UCClient {
             Ok(https_env) => {
                 eprintln!("Using https proxy: {}", https_env);
                 builder.proxy(reqwest::Proxy::https(https_env)?)
-            },
+            }
             Err(_) => builder,
         };
 
-        let client = builder.build()?;
+        let base_client = builder.build().unwrap();
+
+        let tracing_client = ClientBuilder::new(base_client)
+            .with(TracingMiddleware::default())
+            .build();
 
         Ok(Self {
-            client,
+            client: tracing_client,
             base_url: config.workspace_url.clone(),
             config,
         })
@@ -145,7 +151,7 @@ impl UCClient {
     async fn execute_with_retry<F, Fut>(&self, f: F) -> Result<Response>
     where
         F: Fn() -> Fut,
-        Fut: Future<Output = std::result::Result<Response, reqwest::Error>>,
+        Fut: Future<Output = std::result::Result<Response, reqwest_middleware::Error>>,
     {
         for retry in 0..=self.config.max_retries {
             match f().await {
@@ -164,7 +170,13 @@ impl UCClient {
                         message: "Server error".to_string(),
                     })
                 }
-                Err(e) if retry < self.config.max_retries => {
+                Err(MiddlewareError::Middleware(e)) => {
+                    warn!("Request failed (tracing middleware), aborting: {}", e);
+                    // return Err(Error::from(e.root_cause()));
+                    // XXX: not right
+                    break;
+                }
+                Err(MiddlewareError::Reqwest(e)) if retry < self.config.max_retries => {
                     warn!(
                         "Request failed, retrying (attempt {}/{}): {}",
                         retry + 1,
@@ -172,7 +184,7 @@ impl UCClient {
                         e
                     );
                 }
-                Err(e) => return Err(Error::from(e)),
+                Err(MiddlewareError::Reqwest(e)) => return Err(Error::from(e)),
             }
 
             tokio::time::sleep(self.config.retry_base_delay * (retry + 1)).await;
